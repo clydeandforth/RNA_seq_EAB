@@ -1,0 +1,740 @@
+
+# Chatchai Kosawang
+How to I deal with EAB
+*************************
+Plotting PCA: https://bioinfo4all.wordpress.com/2021/01/31/tutorial-6-how-to-do-principal-component-analysis-pca-in-r/
+
+++++++++++++++++++++++
+    Important note 
+++++++++++++++++++++++
+One of the library is prepared with SMARTer kit (CH21), while the others are prepared with TruSeq. The two library kits use different preparatiion methods resulting in different settings for HISAT2 and featureCounts. See  below:
+	CH21 (SMARTer)		HISAT2 >>> 		--rna-strandness FR
+				featureCounts >>>	-s 1
+
+	Other CH (TruSeq)	HISAT2 >>> 		--rna-strandness RF
+				featureCounts >>>	-s 2
+				
+
+1. Removal of low quality bases (Q20) and short reads (less than 35 bases) ** no N base is allowed here **
+----------------------------------------------------------------------------
+for i in *_1.fastq.gz; do SAMPLE=$(echo ${i} | sed "s/_1\.fastq\.gz//"); echo ${SAMPLE}_1.fastq.gz ${SAMPLE}_2.fastq.gz; bbduk.sh in=${SAMPLE}_1.fastq.gz in2=${SAMPLE}_2.fastq.gz out=step1.${SAMPLE}_1.fastq.gz out2=step1.${SAMPLE}_2.fastq.gz outm1=step1.failQC.${SAMPLE}_1.fastq.gz outm2=step1.failedQC.${SAMPLE}_2.fastq.gz ref=/home/chatchai/software/bbmap/resources/adapters.fa ziplevel=6 ktrim=r k=23 mink=11 hdist=1 tpe tbo trimq=20 qtrim=r minlen=35 trimpolya=10 trimpolyg=10 trimpolyc=10 stats=stats_adaptertrim_${SAMPLE}.txt threads=4 -Xmx16G; done
+CH110_B12_EAB_1.fastq.gz CH110_B12_EAB_2.fastq.gz
+
+#OBS. Tried trimming with maxns=3, but got worse results. So used the default setting for maxns (=0)
+
+
+2. 1st microbial rRNA extraction with Bowtie2 (skipped, can't finish the run. Something is wrong with Bowtie2?)
+-----------------------------------------------------------------------------------------------------------------
+for i in *_1.fastq.gz; do SAMPLE=$(echo ${i} | sed "s/_1\.fastq\.gz//"); echo ${SAMPLE}_1.fastq.gz ${SAMPLE}_2.fastq.gz; bowtie2 --quiet --very-sensitive-local --phred33 -x /media/chatchai/5085A31918D300A6/Reference\ databases/Bowtie2_SILVA_data/SSUParc_LSUParc -1 ${SAMPLE}_1.fastq.gz -2 ${SAMPLE}_2.fastq.gz --threads 12 --met-file ${SAMPLE}_bowtie2_SILVA_metrics.txt --al-conc-gz step2.${SAMPLE}_paired_aligned.fastq.gz --un-conc-gz step2.${SAMPLE}_paired_unaligned.fastq.gz --al-gz step2.${SAMPLE}_unpaired_aligned.fastq.gz --un-gz step2.${SAMPLE}_unpaired_unaligned.fastq.gz; done
+
+
+3. Building HISAT2 index
+-------------------------
+hisat2-build -p 8 BATG-0.5-CLCbioSSPACE.fa BATG05
+
+
+4. Mapping with HISAT2
+------------------------
+# select the right --rna-strandedness: https://chipster.csc.fi/manual/library-type-summary.html
+
+for i in *_1.fastq.gz; do SAMPLE=$(echo ${i} | sed "s/_1\.fastq\.gz//"); echo ${SAMPLE}_1.fastq.gz ${SAMPLE}_2.fastq.gz; hisat2 -q -x /home/chatchai/Desktop/EAB/BATG05/BATG05 --rna-strandness RF --phred33 -p 12 -1 ${SAMPLE}_1.fastq.gz -2 ${SAMPLE}_2.fastq.gz -S ${SAMPLE}_hisat2.sam; done
+
+@ for CH21, the library was prepared with SMARTer stranded. The library is based on forward strand, not reverse as in TruSeq. Settings for HiSAT2 must be changed:
+hisat2 -q -x /home/chatchai/Desktop/EAB/BATG05/BATG05 --rna-strandness FR --phred33 -p 6 -1 step1.CH21_B12_EAB_1.fastq.gz -2 step1.CH21_B12_EAB_2.fastq.gz -S step1.CH21_B12_EAB_SMARTer_hisat2.sam
+
+
+5. Converting from sam to bam
+------------------------------- 
+for i in *_hisat2.sam; do SAMPLE=$(echo ${i} | sed "s/_hisat2\.sam//"); echo ${SAMPLE}_hisat2.sam; samtools view -@ 2 -bS ${SAMPLE}_hisat2.sam > ${SAMPLE}_hisat2.bam; done
+
+samtools view -@ 4 -bS step1.CH21_B12_EAB_SMARTer_hisat2.sam > step1.CH21_B12_EAB_SMARTer_hisat2.bam
+
+
+6. Sorting bam files
+---------------------
+for i in *_hisat2.bam; do SAMPLE=$(echo ${i} | sed "s/_hisat2\.bam//"); echo ${SAMPLE}_hisat2.bam; samtools sort -@ 4 ${SAMPLE}_hisat2.bam -o sorted.${SAMPLE}_hisat2.bam; done
+
+samtools sort -@ 4 step1.CH21_B12_EAB_SMARTer_hisat2.bam -o sorted.step1.CH21_B12_EAB_SMARTer_hisat2.bam
+ 
+
+7. Conversion of GFF3 annotation to GTF using AGAT (for using with featureCounts)
+-----------------------------------------------------------------------------------
+agat_convert_sp_gff2gtf.pl --gff Fraxinus_excelsior_38873_TGAC_v2.gff3 -o Fraxinus_excelsior_38873_TGAC_v2_AGAT.gtf
+
+
+8. featureCounts to summarize reads
+-------------------------------------
+@ In this case, counts fragments that have both ends mapped only (-B), paired fragments (--countReadPairs) and reverse stranded (-s 2)
+
+featureCounts -p -t exon -g gene_id -T 4 -a ../BATG05/Fraxinus_excelsior_38873_TGAC_v2_AGAT.gtf -o counts_sorted_hisat2_stranded_specific_s2.txt sorted.step1.CH110_B12_EAB_hisat2.bam sorted.step1.CH111_B12_EAB_ADB_hisat2.bam sorted.step1.CH113_B12_C_hisat2.bam sorted.step1.CH23_B12_EAB_ADB_hisat2.bam sorted.step1.CH24_B12_C_hisat2.bam sorted.step1.CH49_B12_EAB_hisat2.bam sorted.step1.CH50_B12_EAB_ADB_hisat2.bam sorted.step1.CH52_B12_C_hisat2.bam -B -s 2 --countReadPairs
+
+
+9) edgeR analysis of gene expression
+--------------------------------------
+### There are two rounds. Round 1 to check sample heterogeneity since the sample CH21 is prepared using another kit.
+			   Round 2 is the real analysis.
+
+9.1 ROUND1
+------------
+> rawCountTable <- read.table("total_adj.txt", header=TRUE, sep="\t", row.names=1)
+
+> sampleInfo <- read.table("sampleInfo_EAB.csv", header=TRUE, sep=",", row.names=1)
+
+> head(rawCountTable)
+                        CH24_B12_C CH52_B12_C CH113_B12_C CH21_B12_EAB
+FRAEX38873_v2_000000010        735        391         627          145
+FRAEX38873_v2_000000020        582        553         653            7
+FRAEX38873_v2_000000030        310        226         253         1157
+FRAEX38873_v2_000000040        288        222         242           53
+FRAEX38873_v2_000000050        456        384         434           44
+FRAEX38873_v2_000000060        289        318         265          140
+                        CH49_B12_EAB CH110_B12_EAB CH23_B12_EAB_ADB
+FRAEX38873_v2_000000010          416           392              265
+FRAEX38873_v2_000000020          594           495              398
+FRAEX38873_v2_000000030          513           768             1092
+FRAEX38873_v2_000000040          131            71              267
+FRAEX38873_v2_000000050          806           665              532
+FRAEX38873_v2_000000060          448           387              235
+                        CH50_B12_EAB_ADB CH111_B12_EAB_ADB
+FRAEX38873_v2_000000010              394               537
+FRAEX38873_v2_000000020              193               684
+FRAEX38873_v2_000000030             1199               917
+FRAEX38873_v2_000000040               78               209
+FRAEX38873_v2_000000050              446               789
+FRAEX38873_v2_000000060              326               446
+
+> head(sampleInfo)
+              condition group
+CH24_B12_C      control     A
+CH52_B12_C      control     A
+CH113_B12_C     control     A
+CH21_B12_EAB        EAB     B
+CH49_B12_EAB        EAB     B
+CH110_B12_EAB       EAB     B
+
+> dgeFull <- DGEList(rawCountTable, group=sampleInfo$condition)
+
+> dgeFull
+An object of class "DGEList"
+$counts
+                        CH24_B12_C CH52_B12_C CH113_B12_C CH21_B12_EAB
+FRAEX38873_v2_000000010        735        391         627          145
+FRAEX38873_v2_000000020        582        553         653            7
+FRAEX38873_v2_000000030        310        226         253         1157
+FRAEX38873_v2_000000040        288        222         242           53
+FRAEX38873_v2_000000050        456        384         434           44
+                        CH49_B12_EAB CH110_B12_EAB CH23_B12_EAB_ADB
+FRAEX38873_v2_000000010          416           392              265
+FRAEX38873_v2_000000020          594           495              398
+FRAEX38873_v2_000000030          513           768             1092
+FRAEX38873_v2_000000040          131            71              267
+FRAEX38873_v2_000000050          806           665              532
+                        CH50_B12_EAB_ADB CH111_B12_EAB_ADB
+FRAEX38873_v2_000000010              394               537
+FRAEX38873_v2_000000020              193               684
+FRAEX38873_v2_000000030             1199               917
+FRAEX38873_v2_000000040               78               209
+FRAEX38873_v2_000000050              446               789
+38944 more rows ...
+
+$samples
+                    group lib.size norm.factors
+CH24_B12_C        control 31291237            1
+CH52_B12_C        control 29565034            1
+CH113_B12_C       control 32943944            1
+CH21_B12_EAB          EAB 25564620            1
+CH49_B12_EAB          EAB 26191415            1
+CH110_B12_EAB         EAB 29429160            1
+CH23_B12_EAB_ADB  EAB-ADB 27269710            1
+CH50_B12_EAB_ADB  EAB-ADB 31107775            1
+CH111_B12_EAB_ADB EAB-ADB 30668141            1
+
+> dgeFull <- DGEList(dgeFull$counts[apply(dgeFull$counts, 1, sum) != 0, ], group=dgeFull$samples$group)
+
+> keep <- filterByExpr(dgeFull)
+
+> dgeFull <- dgeFull[keep, , keep.lib.sizes=FALSE]
+
+> dgeFull <- calcNormFactors(dgeFull, method='TMM')
+
+> plotMDS(dgeFull) @@@ plotMDS indicated that the sameple CH21 is different from the rest of samples. Remove CH21 out from the analysis.
+
+
+9.2 Round 2
+-------------
+> rawCountTable <- read.table("counts_sorted_hisat2_stranded_specific_s2_adj.txt", header=TRUE, sep="\t", row.names="Geneid")
+
+> sampleInfo <- read.table("sampleInfo_EAB_adj.csv", header=TRUE, sep=",", row.names="file")
+
+> dgeFull <- DGEList(dgeFull$counts[apply(dgeFull$counts, 1, sum) != 0, ], group=dgeFull$samples$group)
+
+> keep <- filterByExpr(dgeFull)
+
+> dgeFull <- dgeFull[keep, , keep.lib.sizes=FALSE]
+
+> dgeFull <- calcNormFactors(dgeFull, method='TMM')
+
+> group <- factor(sampleInfo$group)
+
+> design <- model.matrix(~0+group)
+
+> colnames(design) <- levels(group)
+
+> colnames(fit)
+
+> fit <- glmQLFit(dgeFull,design)
+
+> my.contrasts <- makeContrasts(2fac=EAB_ADB-control, 1fac=EAB-control, diff=(EAB_ADB-control)-(EAB-control), levels=design)
+
+> qlf2fac <- glmQLFTest(fit, contrast=my.contrasts[,"2fac"])
+
+
+max.print = 10000
+
+topTag.DvsC <- topTags(qlf.DvsC, n=5000) 
+
+write.table(topTag.DvsC,"topTag_DvsC.csv",sep=";")
+
+
+
+*********************************************************
+> rawCountTable <- read.table("counts_sorted_hisat2_stranded_specific_s2_adj.txt", header=TRUE, sep="\t", row.names="Geneid")
+> sampleInfo <- read.table("sampleInfo_EAB_adj.csv", header=TRUE, sep=",", row.names="file")
+> group <- factor(sampleInfo$group)
+> y <- DGEList(counts=rawCountTable,group=group)
+> keep <- filterByExpr(y)
+> y <- y[keep,,keep.lib.sizes=FALSE]
+> y <- calcNormFactors(y)
+> design <- model.matrix(~0+group)
+> y <- estimateDisp(y,design)
+> fit <- glmQLFit(y,design)
+> colnames(fit)
+[1] "groupA" "groupB" "groupC"
+> y
+An object of class "DGEList"
+$counts
+                        CH24_B12_C CH52_B12_C CH113_B12_C CH49_B12_EAB
+FRAEX38873_v2_000000010        735        391         627          416
+FRAEX38873_v2_000000020        582        553         653          594
+FRAEX38873_v2_000000030        310        226         253          513
+FRAEX38873_v2_000000040        288        222         242          131
+FRAEX38873_v2_000000050        456        384         434          806
+                        CH110_B12_EAB CH23_B12_EAB_ADB CH50_B12_EAB_ADB
+FRAEX38873_v2_000000010           392              265              394
+FRAEX38873_v2_000000020           495              398              193
+FRAEX38873_v2_000000030           768             1092             1199
+FRAEX38873_v2_000000040            71              267               78
+FRAEX38873_v2_000000050           665              532              446
+                        CH111_B12_EAB_ADB
+FRAEX38873_v2_000000010               537
+FRAEX38873_v2_000000020               684
+FRAEX38873_v2_000000030               917
+FRAEX38873_v2_000000040               209
+FRAEX38873_v2_000000050               789
+30440 more rows ...
+
+$samples
+                  group lib.size norm.factors
+CH24_B12_C            A 31278840    1.0694933
+CH52_B12_C            A 29555373    1.0645278
+CH113_B12_C           A 32936690    1.0255844
+CH49_B12_EAB          B 26183015    1.1593604
+CH110_B12_EAB         B 29421999    0.9584350
+CH23_B12_EAB_ADB      C 27260955    0.9329225
+CH50_B12_EAB_ADB      C 31091398    0.7112433
+CH111_B12_EAB_ADB     C 30656016    1.1615786
+
+$design
+  groupA groupB groupC
+1      1      0      0
+2      1      0      0
+3      1      0      0
+4      0      1      0
+5      0      1      0
+6      0      0      1
+7      0      0      1
+8      0      0      1
+attr(,"assign")
+[1] 1 1 1
+attr(,"contrasts")
+attr(,"contrasts")$group
+[1] "contr.treatment"
+
+
+$common.dispersion
+[1] 0.3134156
+
+$trended.dispersion
+[1] 0.2328402 0.2259847 0.2010387 0.3260282 0.2167790
+30440 more elements ...
+
+$tagwise.dispersion
+[1] 0.11401666 0.11362286 0.12114556 0.19664694 0.06982936
+30440 more elements ...
+
+$AveLogCPM
+[1] 3.959100 4.082886 4.580710 2.646806 4.253458
+30440 more elements ...
+
+$trend.method
+[1] "locfit"
+
+$prior.df
+[1] 2.504722
+
+$prior.n
+[1] 0.5009443
+
+$span
+[1] 0.280394
+
+> my.contrasts <- makeContrasts(vsEAB=groupB-groupA, vsEABADB=groupC-groupA, vsBACA=(groupB-groupA)-(groupC-groupA), vsCABA=(groupC-groupA)-(groupB-groupA), levels=design)
+
+> qlf.vsEAB <- glmQLFTest(fit, contrast=my.contrasts[,"vsEAB"])
+
+> max.print = 10000
+
+> qlfEAB.resFilt <- topTags(qlf.vsEAB, n=nrow(qlf.vsEAB$table),adjust.method="fdr")
+
+> sum(qlfEAB.resFilt$table$FDR < 0.05)
+
+> sum(resFilt$table$FDR < 0.01)
+[1] 102
+
+> sigReg <- resFilt$table[resFilt$table$FDR<0.01,] 
+
+> sigReg <- sigReg[order(sigReg$logFC),]
+
+> write.table(sigReg,"sigReg_Fex27_tp1_001.csv",sep=";")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+@@@ Supplementary info @@@
+****************************
+1) HISAT2 mapping statistics
+-------------------------------
+# Remark: mapping for CH21 is set for RF, which was wrong since the SMARTer kit uses forward strand. Stat for the right mapping direction is shown in 2) where the CH21 sample was mapped with FR direction
+
+for i in *_1.fastq.gz; do SAMPLE=$(echo ${i} | sed "s/_1\.fastq\.gz//"); echo ${SAMPLE}_1.fastq.gz ${SAMPLE}_2.fastq.gz; hisat2 -q -x /home/chatchai/Desktop/EAB/BATG05/BATG05 --rna-strandness RF --phred33 -p 2 -1 ${SAMPLE}_1.fastq.gz -2 ${SAMPLE}_2.fastq.gz -S ${SAMPLE}_hisat2.sam; done
+step1.CH110_B12_EAB_1.fastq.gz step1.CH110_B12_EAB_2.fastq.gz
+38105519 reads; of these:
+  38105519 (100.00%) were paired; of these:
+    4460665 (11.71%) aligned concordantly 0 times
+    31475834 (82.60%) aligned concordantly exactly 1 time
+    2169020 (5.69%) aligned concordantly >1 times
+    ----
+    4460665 pairs aligned concordantly 0 times; of these:
+      334370 (7.50%) aligned discordantly 1 time
+    ----
+    4126295 pairs aligned 0 times concordantly or discordantly; of these:
+      8252590 mates make up the pairs; of these:
+        5290100 (64.10%) aligned 0 times
+        2725792 (33.03%) aligned exactly 1 time
+        236698 (2.87%) aligned >1 times
+93.06% overall alignment rate
+
+step1.CH111_B12_EAB_ADB_1.fastq.gz step1.CH111_B12_EAB_ADB_2.fastq.gz
+40646460 reads; of these:
+  40646460 (100.00%) were paired; of these:
+    5680487 (13.98%) aligned concordantly 0 times
+    32731828 (80.53%) aligned concordantly exactly 1 time
+    2234145 (5.50%) aligned concordantly >1 times
+    ----
+    5680487 pairs aligned concordantly 0 times; of these:
+      923167 (16.25%) aligned discordantly 1 time
+    ----
+    4757320 pairs aligned 0 times concordantly or discordantly; of these:
+      9514640 mates make up the pairs; of these:
+        5719057 (60.11%) aligned 0 times
+        3403196 (35.77%) aligned exactly 1 time
+        392387 (4.12%) aligned >1 times
+92.96% overall alignment rate
+
+step1.CH113_B12_C_1.fastq.gz step1.CH113_B12_C_2.fastq.gz
+42314503 reads; of these:
+  42314503 (100.00%) were paired; of these:
+    5738466 (13.56%) aligned concordantly 0 times
+    34793293 (82.23%) aligned concordantly exactly 1 time
+    1782744 (4.21%) aligned concordantly >1 times
+    ----
+    5738466 pairs aligned concordantly 0 times; of these:
+      909019 (15.84%) aligned discordantly 1 time
+    ----
+    4829447 pairs aligned 0 times concordantly or discordantly; of these:
+      9658894 mates make up the pairs; of these:
+        6074908 (62.89%) aligned 0 times
+        3278348 (33.94%) aligned exactly 1 time
+        305638 (3.16%) aligned >1 times
+92.82% overall alignment rate
+
+step1.CH21_B12_EAB_1.fastq.gz step1.CH21_B12_EAB_2.fastq.gz
+47639079 reads; of these:
+  47639079 (100.00%) were paired; of these:
+    11519841 (24.18%) aligned concordantly 0 times
+    31244231 (65.59%) aligned concordantly exactly 1 time
+    4875007 (10.23%) aligned concordantly >1 times
+    ----
+    11519841 pairs aligned concordantly 0 times; of these:
+      62016 (0.54%) aligned discordantly 1 time
+    ----
+    11457825 pairs aligned 0 times concordantly or discordantly; of these:
+      22915650 mates make up the pairs; of these:
+        20556612 (89.71%) aligned 0 times
+        1797718 (7.84%) aligned exactly 1 time
+        561320 (2.45%) aligned >1 times
+78.42% overall alignment rate
+
+step1.CH23_B12_EAB_ADB_1.fastq.gz step1.CH23_B12_EAB_ADB_2.fastq.gz
+36533261 reads; of these:
+  36533261 (100.00%) were paired; of these:
+    5217973 (14.28%) aligned concordantly 0 times
+    28856167 (78.99%) aligned concordantly exactly 1 time
+    2459121 (6.73%) aligned concordantly >1 times
+    ----
+    5217973 pairs aligned concordantly 0 times; of these:
+      852771 (16.34%) aligned discordantly 1 time
+    ----
+    4365202 pairs aligned 0 times concordantly or discordantly; of these:
+      8730404 mates make up the pairs; of these:
+        5090308 (58.31%) aligned 0 times
+        3202630 (36.68%) aligned exactly 1 time
+        437466 (5.01%) aligned >1 times
+93.03% overall alignment rate
+
+step1.CH24_B12_C_1.fastq.gz step1.CH24_B12_C_2.fastq.gz
+39906770 reads; of these:
+  39906770 (100.00%) were paired; of these:
+    5118422 (12.83%) aligned concordantly 0 times
+    33231406 (83.27%) aligned concordantly exactly 1 time
+    1556942 (3.90%) aligned concordantly >1 times
+    ----
+    5118422 pairs aligned concordantly 0 times; of these:
+      699916 (13.67%) aligned discordantly 1 time
+    ----
+    4418506 pairs aligned 0 times concordantly or discordantly; of these:
+      8837012 mates make up the pairs; of these:
+        5446489 (61.63%) aligned 0 times
+        3134855 (35.47%) aligned exactly 1 time
+        255668 (2.89%) aligned >1 times
+93.18% overall alignment rate
+
+step1.CH49_B12_EAB_1.fastq.gz step1.CH49_B12_EAB_2.fastq.gz
+34992501 reads; of these:
+  34992501 (100.00%) were paired; of these:
+    5087282 (14.54%) aligned concordantly 0 times
+    28092791 (80.28%) aligned concordantly exactly 1 time
+    1812428 (5.18%) aligned concordantly >1 times
+    ----
+    5087282 pairs aligned concordantly 0 times; of these:
+      875322 (17.21%) aligned discordantly 1 time
+    ----
+    4211960 pairs aligned 0 times concordantly or discordantly; of these:
+      8423920 mates make up the pairs; of these:
+        5032673 (59.74%) aligned 0 times
+        3039172 (36.08%) aligned exactly 1 time
+        352075 (4.18%) aligned >1 times
+92.81% overall alignment rate
+
+step1.CH50_B12_EAB_ADB_1.fastq.gz step1.CH50_B12_EAB_ADB_2.fastq.gz
+40850709 reads; of these:
+  40850709 (100.00%) were paired; of these:
+    5168063 (12.65%) aligned concordantly 0 times
+    33249385 (81.39%) aligned concordantly exactly 1 time
+    2433261 (5.96%) aligned concordantly >1 times
+    ----
+    5168063 pairs aligned concordantly 0 times; of these:
+      526290 (10.18%) aligned discordantly 1 time
+    ----
+    4641773 pairs aligned 0 times concordantly or discordantly; of these:
+      9283546 mates make up the pairs; of these:
+        5977100 (64.38%) aligned 0 times
+        3021555 (32.55%) aligned exactly 1 time
+        284891 (3.07%) aligned >1 times
+92.68% overall alignment rate
+
+step1.CH52_B12_C_1.fastq.gz step1.CH52_B12_C_2.fastq.gz
+39615461 reads; of these:
+  39615461 (100.00%) were paired; of these:
+    6076899 (15.34%) aligned concordantly 0 times
+    31758961 (80.17%) aligned concordantly exactly 1 time
+    1779601 (4.49%) aligned concordantly >1 times
+    ----
+    6076899 pairs aligned concordantly 0 times; of these:
+      1203541 (19.81%) aligned discordantly 1 time
+    ----
+    4873358 pairs aligned 0 times concordantly or discordantly; of these:
+      9746716 mates make up the pairs; of these:
+        5729064 (58.78%) aligned 0 times
+        3631430 (37.26%) aligned exactly 1 time
+        386222 (3.96%) aligned >1 times
+92.77% overall alignment rate
+
+
+2) Mapping stat for CH21 with FR direction according to the kit selection for forward strand
+---------------------------------------------------------------------------------------------
+hisat2 -q -x /home/chatchai/Desktop/EAB/BATG05/BATG05 --rna-strandness FR --phred33 -p 6 -1 step1.CH21_B12_EAB_1.fastq.gz -2 step1.CH21_B12_EAB_2.fastq.gz -S step1.CH21_B12_EAB_SMARTer_hisat2.sam
+47639079 reads; of these:
+  47639079 (100.00%) were paired; of these:
+    11519869 (24.18%) aligned concordantly 0 times
+    31244154 (65.59%) aligned concordantly exactly 1 time
+    4875056 (10.23%) aligned concordantly >1 times
+    ----
+    11519869 pairs aligned concordantly 0 times; of these:
+      62021 (0.54%) aligned discordantly 1 time
+    ----
+    11457848 pairs aligned 0 times concordantly or discordantly; of these:
+      22915696 mates make up the pairs; of these:
+        20556647 (89.71%) aligned 0 times
+        1797731 (7.84%) aligned exactly 1 time
+        561318 (2.45%) aligned >1 times
+78.42% overall alignment rate
+
+
+
+3) FeatureCounts to quantify reads
+-------------------------------------
+featureCounts -p -t exon -g gene_id -T 4 -a ../BATG05/Fraxinus_excelsior_38873_TGAC_v2_AGAT.gtf -o counts_sorted_hisat2_stranded_specific_s2.txt sorted.step1.CH110_B12_EAB_hisat2.bam sorted.step1.CH111_B12_EAB_ADB_hisat2.bam sorted.step1.CH113_B12_C_hisat2.bam sorted.step1.CH23_B12_EAB_ADB_hisat2.bam sorted.step1.CH24_B12_C_hisat2.bam sorted.step1.CH49_B12_EAB_hisat2.bam sorted.step1.CH50_B12_EAB_ADB_hisat2.bam sorted.step1.CH52_B12_C_hisat2.bam -B -s 2 --countReadPairs
+
+        ==========     _____ _    _ ____  _____  ______          _____  
+        =====         / ____| |  | |  _ \|  __ \|  ____|   /\   |  __ \ 
+          =====      | (___ | |  | | |_) | |__) | |__     /  \  | |  | |
+            ====      \___ \| |  | |  _ <|  _  /|  __|   / /\ \ | |  | |
+              ====    ____) | |__| | |_) | | \ \| |____ / ____ \| |__| |
+        ==========   |_____/ \____/|____/|_|  \_\______/_/    \_\_____/
+	  v2.0.2
+
+//========================== featureCounts setting ===========================\\
+||                                                                            ||
+||             Input files : 8 BAM files                                      ||
+||                                                                            ||
+||                           sorted.step1.CH110_B12_EAB_hisat2.bam            ||
+||                           sorted.step1.CH111_B12_EAB_ADB_hisat2.bam        ||
+||                           sorted.step1.CH113_B12_C_hisat2.bam              ||
+||                           sorted.step1.CH23_B12_EAB_ADB_hisat2.bam         ||
+||                           sorted.step1.CH24_B12_C_hisat2.bam               ||
+||                           sorted.step1.CH49_B12_EAB_hisat2.bam             ||
+||                           sorted.step1.CH50_B12_EAB_ADB_hisat2.bam         ||
+||                           sorted.step1.CH52_B12_C_hisat2.bam               ||
+||                                                                            ||
+||             Output file : counts_sorted_hisat2_stranded_specific_s2.txt    ||
+||                 Summary : counts_sorted_hisat2_stranded_specific_s2.tx ... ||
+||              Paired-end : yes                                              ||
+||        Count read pairs : yes                                              ||
+||              Annotation : Fraxinus_excelsior_38873_TGAC_v2_AGAT.gtf (GTF)  ||
+||      Dir for temp files : ./                                               ||
+||                                                                            ||
+||                 Threads : 4                                                ||
+||                   Level : meta-feature level                               ||
+||      Multimapping reads : not counted                                      ||
+|| Multi-overlapping reads : not counted                                      ||
+||   Min overlapping bases : 1                                                ||
+||                                                                            ||
+\\============================================================================//
+
+//================================= Running ==================================\\
+||                                                                            ||
+|| Load annotation file Fraxinus_excelsior_38873_TGAC_v2_AGAT.gtf ...         ||
+||    Features : 308033                                                       ||
+||    Meta-features : 38949                                                   ||
+||    Chromosomes/contigs : 10642                                             ||
+||                                                                            ||
+|| Process BAM file sorted.step1.CH110_B12_EAB_hisat2.bam...                  ||
+||    Strand specific : reversely stranded                                    ||
+||    Paired-end reads are included.                                          ||
+||    Total alignments : 42314905                                             ||
+||    Successfully assigned alignments : 29429160 (69.5%)                     ||
+||    Running time : 0.87 minutes                                             ||
+||                                                                            ||
+|| Process BAM file sorted.step1.CH111_B12_EAB_ADB_hisat2.bam...              ||
+||    Strand specific : reversely stranded                                    ||
+||    Paired-end reads are included.                                          ||
+||    Total alignments : 45431938                                             ||
+||    Successfully assigned alignments : 30668141 (67.5%)                     ||
+||    Running time : 1.08 minutes                                             ||
+||                                                                            ||
+|| Process BAM file sorted.step1.CH113_B12_C_hisat2.bam...                    ||
+||    Strand specific : reversely stranded                                    ||
+||    Paired-end reads are included.                                          ||
+||    Total alignments : 45597533                                             ||
+||    Successfully assigned alignments : 32943944 (72.2%)                     ||
+||    Running time : 0.97 minutes                                             ||
+||                                                                            ||
+|| Process BAM file sorted.step1.CH23_B12_EAB_ADB_hisat2.bam...               ||
+||    Strand specific : reversely stranded                                    ||
+||    Paired-end reads are included.                                          ||
+||    Total alignments : 41982196                                             ||
+||    Successfully assigned alignments : 27269710 (65.0%)                     ||
+||    Running time : 1.06 minutes                                             ||
+||                                                                            ||
+|| Process BAM file sorted.step1.CH24_B12_C_hisat2.bam...                     ||
+||    Strand specific : reversely stranded                                    ||
+||    Paired-end reads are included.                                          ||
+||    Total alignments : 42670395                                             ||
+||    Successfully assigned alignments : 31291237 (73.3%)                     ||
+||    Running time : 0.92 minutes                                             ||
+||                                                                            ||
+|| Process BAM file sorted.step1.CH49_B12_EAB_hisat2.bam...                   ||
+||    Strand specific : reversely stranded                                    ||
+||    Paired-end reads are included.                                          ||
+||    Total alignments : 38712681                                             ||
+||    Successfully assigned alignments : 26191415 (67.7%)                     ||
+||    Running time : 0.82 minutes                                             ||
+||                                                                            ||
+|| Process BAM file sorted.step1.CH50_B12_EAB_ADB_hisat2.bam...               ||
+||    Strand specific : reversely stranded                                    ||
+||    Paired-end reads are included.                                          ||
+||    Total alignments : 45854614                                             ||
+||    Successfully assigned alignments : 31107775 (67.8%)                     ||
+||    Running time : 1.13 minutes                                             ||
+||                                                                            ||
+|| Process BAM file sorted.step1.CH52_B12_C_hisat2.bam...                     ||
+||    Strand specific : reversely stranded                                    ||
+||    Paired-end reads are included.                                          ||
+||    Total alignments : 43304541                                             ||
+||    Successfully assigned alignments : 29565034 (68.3%)                     ||
+||    Running time : 1.13 minutes                                             ||
+||                                                                            ||
+|| Write the final count table.                                               ||
+|| Write the read assignment summary.                                         ||
+||                                                                            ||
+|| Summary of counting results can be found in file "counts_sorted_hisat2_st  ||
+|| randed_specific_s2.txt.summary"                                            ||
+||                                                                            ||
+\\============================================================================//
+
+
+
+4) featureCounts stat for CH21 SMARTer
+----------------------------------------
+featureCounts -p -t exon -g gene_id -T 4 -a ../../BATG05/Fraxinus_excelsior_38873_TGAC_v2_AGAT.gtf -o counts_sorted_CH21_SMARTer_HISAT2_FR_s1.txt sorted.step1.CH21_B12_EAB_SMARTer_hisat2.bam -B -s 1 --countReadPairs
+
+        ==========     _____ _    _ ____  _____  ______          _____  
+        =====         / ____| |  | |  _ \|  __ \|  ____|   /\   |  __ \ 
+          =====      | (___ | |  | | |_) | |__) | |__     /  \  | |  | |
+            ====      \___ \| |  | |  _ <|  _  /|  __|   / /\ \ | |  | |
+              ====    ____) | |__| | |_) | | \ \| |____ / ____ \| |__| |
+        ==========   |_____/ \____/|____/|_|  \_\______/_/    \_\_____/
+	  v2.0.2
+
+//========================== featureCounts setting ===========================\\
+||                                                                            ||
+||             Input files : 1 BAM file                                       ||
+||                                                                            ||
+||                           sorted.step1.CH21_B12_EAB_SMARTer_hisat2.bam     ||
+||                                                                            ||
+||             Output file : counts_sorted_CH21_SMARTer_HISAT2_FR_s1.txt      ||
+||                 Summary : counts_sorted_CH21_SMARTer_HISAT2_FR_s1.txt. ... ||
+||              Paired-end : yes                                              ||
+||        Count read pairs : yes                                              ||
+||              Annotation : Fraxinus_excelsior_38873_TGAC_v2_AGAT.gtf (GTF)  ||
+||      Dir for temp files : ./                                               ||
+||                                                                            ||
+||                 Threads : 4                                                ||
+||                   Level : meta-feature level                               ||
+||      Multimapping reads : not counted                                      ||
+|| Multi-overlapping reads : not counted                                      ||
+||   Min overlapping bases : 1                                                ||
+||                                                                            ||
+\\============================================================================//
+
+//================================= Running ==================================\\
+||                                                                            ||
+|| Load annotation file Fraxinus_excelsior_38873_TGAC_v2_AGAT.gtf ...         ||
+||    Features : 308033                                                       ||
+||    Meta-features : 38949                                                   ||
+||    Chromosomes/contigs : 10642                                             ||
+||                                                                            ||
+|| Process BAM file sorted.step1.CH21_B12_EAB_SMARTer_hisat2.bam...           ||
+||    Strand specific : stranded                                              ||
+||    Paired-end reads are included.                                          ||
+||    Total alignments : 57625651                                             ||
+||    Successfully assigned alignments : 25564620 (44.4%)                     ||
+||    Running time : 1.43 minutes                                             ||
+||                                                                            ||
+|| Write the final count table.                                               ||
+|| Write the read assignment summary.                                         ||
+||                                                                            ||
+|| Summary of counting results can be found in file "counts_sorted_CH21_SMAR  ||
+|| Ter_HISAT2_FR_s1.txt.summary"                                              ||
+||                                                                            ||
+\\============================================================================//
+
+
+@ Test if the direction is correct. If not, a mapping rate will be very low (as in the case below, 1%)!
+
+featureCounts -p -t exon -g gene_id -T 4 -a ../../BATG05/Fraxinus_excelsior_38873_TGAC_v2_AGAT.gtf -o counts_sorted_CH21_SMARTer_HISAT2_FR_test_s2.txt sorted.step1.CH21_B12_EAB_SMARTer_hisat2.bam -B -s 2 --countReadPairs
+
+        ==========     _____ _    _ ____  _____  ______          _____  
+        =====         / ____| |  | |  _ \|  __ \|  ____|   /\   |  __ \ 
+          =====      | (___ | |  | | |_) | |__) | |__     /  \  | |  | |
+            ====      \___ \| |  | |  _ <|  _  /|  __|   / /\ \ | |  | |
+              ====    ____) | |__| | |_) | | \ \| |____ / ____ \| |__| |
+        ==========   |_____/ \____/|____/|_|  \_\______/_/    \_\_____/
+	  v2.0.2
+
+//========================== featureCounts setting ===========================\\
+||                                                                            ||
+||             Input files : 1 BAM file                                       ||
+||                                                                            ||
+||                           sorted.step1.CH21_B12_EAB_SMARTer_hisat2.bam     ||
+||                                                                            ||
+||             Output file : counts_sorted_CH21_SMARTer_HISAT2_FR_test_s2 ... ||
+||                 Summary : counts_sorted_CH21_SMARTer_HISAT2_FR_test_s2 ... ||
+||              Paired-end : yes                                              ||
+||        Count read pairs : yes                                              ||
+||              Annotation : Fraxinus_excelsior_38873_TGAC_v2_AGAT.gtf (GTF)  ||
+||      Dir for temp files : ./                                               ||
+||                                                                            ||
+||                 Threads : 4                                                ||
+||                   Level : meta-feature level                               ||
+||      Multimapping reads : not counted                                      ||
+|| Multi-overlapping reads : not counted                                      ||
+||   Min overlapping bases : 1                                                ||
+||                                                                            ||
+\\============================================================================//
+
+//================================= Running ==================================\\
+||                                                                            ||
+|| Load annotation file Fraxinus_excelsior_38873_TGAC_v2_AGAT.gtf ...         ||
+||    Features : 308033                                                       ||
+||    Meta-features : 38949                                                   ||
+||    Chromosomes/contigs : 10642                                             ||
+||                                                                            ||
+|| Process BAM file sorted.step1.CH21_B12_EAB_SMARTer_hisat2.bam...           ||
+||    Strand specific : reversely stranded                                    ||
+||    Paired-end reads are included.                                          ||
+||    Total alignments : 57625651                                             ||
+||    Successfully assigned alignments : 565585 (1.0%)                        ||
+||    Running time : 1.09 minutes                                             ||
+||                                                                            ||
+|| Write the final count table.                                               ||
+|| Write the read assignment summary.                                         ||
+||                                                                            ||
+|| Summary of counting results can be found in file "counts_sorted_CH21_SMAR  ||
+|| Ter_HISAT2_FR_test_s2.txt.summary"                                         ||
+||                                                                            ||
+\\============================================================================//
+
+
+
+
