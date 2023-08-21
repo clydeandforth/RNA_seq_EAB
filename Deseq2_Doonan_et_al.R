@@ -10,10 +10,16 @@ library(Cairo)
 library(clusterProfiler)
 library(gage)
 library(KEGGREST)
+library(tibble)
+library(tidyverse)
+sessionInfo() %>% capture.output(file="session_info.txt")
+setwd("/Users/krg114/Downloads/RNA_seq_EAB/EAB_ADB_Shared_HISAT2_featureCount/")
+
 
 ## Tree B3
+
 deseqFile1 <- "b3_counts.csv"
-countData1 <- read.table(deseqFile1, header = T, sep = ";", row.names = 1)
+countData1 <- read.table(deseqFile1, header = T, sep = ",", row.names = 1)
 head(countData1)
 sampleNames1 <- colnames(countData1)
 sampleCondition1 <- c("Control","Control","Control","Treatment", "Treatment","Treatment")
@@ -26,6 +32,7 @@ all(rownames(colData1) == colnames(countData1))
 dds1 <- DESeqDataSetFromMatrix(countData = countData1,
                                colData = colData1,
                                design = ~ condition)
+
 dds1
 keep1 <- rowSums(counts(dds1)) >= 0
 dds1 <- dds1[keep1,]
@@ -47,17 +54,70 @@ summary(resLFC_1)
 
 resLFC_1$ID<-rownames(resLFC_1)
 
+sum(resLFC_1$padj <= 0.1 & resLFC_1$log2FoldChange > 2 | resLFC_1$log2FoldChange < -2,  na.rm=TRUE)
 
-sum(resLFC_1$padj < 0.1, na.rm=TRUE)
-sum(resLFC_1$padj <= 0.05, na.rm=TRUE)
+sum(resOrdered_1$padj <= 0.05 & resOrdered_1$log2FoldChange > 2 ,  na.rm=TRUE)
+sum(resOrdered_1$padj <= 0.05 & resOrdered_1$log2FoldChange < -2  ,  na.rm=TRUE)
 
-resOrdered <- res1[order(res1$pvalue),]
+sum(resLFC_1$padj <= 0.05 , na.rm=TRUE)
+top50_padj_b3<-head(resLFC_1[order(resLFC_1$padj),], 50)
+
+resOrdered <- res1[order(res1$padj),]
+
 pvals<-as.data.frame(resOrdered_1[order(resOrdered_1$padj),])
+vsd <- vst(dds1, blind=FALSE)
+
+library("pheatmap")
+library(RColorBrewer)
+heat_colors <- brewer.pal(6, "YlOrRd")
+select <- order(rowMeans(counts(dds1,normalized=TRUE)),
+                decreasing=TRUE)[1:50]
+
+
+df <- as.data.frame(colData(dds1)["condition"])
+
+fontsize_row = 10 - nrow(assay(dds1)[select,]) / 15
+order(rowMeans(counts(dds1,normalized=TRUE)),
+      decreasing=TRUE)[1:50]
+dds2<-dds1[ order(rowMeans(counts(dds1)),decreasing=TRUE)[1:52] ]
+res1 <- results(dds2, name="condition_Treatment_vs_Control")
+res1 <- results(dds2, contrast=c("condition", "Treatment","Control"))
+resOrdered_1 <- res1[order(res1$padj),]
+pvals2<-as.data.frame(res1[order(res1$padj),])
+
+select2 <- countData1$V8[match(rownames(countData1), rownames(dds1))]
+
+pheat1<-pheatmap(assay(dds1)[select,], cluster_rows=TRUE, clustering_distance_rows = "euclidean",color = heat_colors,
+ show_rownames=TRUE, show_colnames = FALSE, labels_row =  countData1$V8,
+                 cluster_cols=FALSE, fontsize_row=fontsize_row, annotation_col=df, scale = "row", cutree_rows = 2, cutree_cols = 2)
+
+B3_top50<-rownames(assay(dds1)[select,][pheat1$tree_row[["order"]],])
+
+write.csv(B3_top50, "B3_top50.csv")
+save_pheatmap_pdf <- function(x, filename, width=7, height=7) {
+  stopifnot(!missing(x))
+  stopifnot(!missing(filename))
+  pdf(filename, width=width, height=height)
+  grid::grid.newpage()
+  grid::grid.draw(x$gtable)
+  dev.off()
+}
+
+save_pheatmap_pdf(pheat1, "B3_pheatmap.pdf")
+dev.off()
+
+B3_hist<-ggplot(pvals) +
+  geom_histogram(aes(x = pvalue), breaks = seq(0, 1, 0.05),
+                 color = "black", fill = "grey") +
+  # Remove space between x-axis and min(y)
+  scale_y_continuous(expand = expansion(c(0, 0.05))) +
+  #facet_wrap(vars(contrast)) + # separate plots
+  theme_bw(base_size = 12)
 
 ####################
 # Functional enrichment prep
-olea<-read.csv("B3_blast_out4.csv", sep = "\t", header = FALSE)
-olea_2<-read.csv("proteins_10724_352035.csv", sep = ",", header = TRUE)
+olea<-read.csv("../../B3_blast_out4.csv", sep = "\t", header = FALSE)
+olea_2<-read.csv("../../proteins_10724_352035.csv", sep = ",", header = TRUE)
 olea$gi<-olea_2$GeneID[match(olea$V2, olea_2$Protein.product)]
 olea3<-olea[, c(1,13)]
 olea3$V1 = substr(olea3$V1, 1, nchar(olea3$V1)-2)
@@ -182,20 +242,36 @@ summary(res05)
 sum(res05$padj < 0.05, na.rm=TRUE)
 
 plotMA(resLFC_1)
-sum(resLFC_1$padj <= 0.05 & pvals$log2FoldChange <= -2, na.rm=TRUE)
-sum(resLFC_1$padj <= 0.05 & pvals$log2FoldChange >= 2, na.rm=TRUE)
-
-
-vsd <- vst(dds1, blind=FALSE)
+sum(pvals$padj <= 0.05 & pvals$log2FoldChange <= -2, na.rm=TRUE)
+sum(pvals$padj <= 0.05 & pvals$log2FoldChange >= 2, na.rm=TRUE)
 
 plotPCA(vsd, intgroup=c("condition", "tree"))
 PCA_1<-plotPCA(vsd, intgroup="condition")+labs(title="B3")
 
 library(EnhancedVolcano)
+keyvals <- ifelse(resOrdered_1$log2FoldChange <= -2 & resOrdered_1$padj <= 0.05, 'blue3',
+   ifelse(resOrdered_1$log2FoldChange >= 2 & resOrdered_1$padj <= 0.05, 'red2',
+            'grey50'))
+
+keyvals[is.na(keyvals)]<-'grey50'
+names(keyvals)[keyvals == 'blue3'] <- 'Down-regulated'
+names(keyvals)[keyvals == 'red2'] <- 'Up-regulated'
+names(keyvals)[keyvals == 'grey50'] <- 'Not significant'
+
+p6<-EnhancedVolcano(resOrdered_1,
+                  x = 'log2FoldChange', y = 'padj', lab = NA,
+                 title = 'Treated vs. Control',
+                  subtitle = bquote('Cutoff values (dashed lines) at LogFC > |2| and' ~italic(P[adj])~ '>0.05'),
+                  pCutoff = 0.05, FCcutoff = 2,
+                  ylab = bquote(~-Log[10]~italic(P[adj])),
+                  border = 'full', gridlines.minor = FALSE, gridlines.major = FALSE,
+                 selectLab = rownames(resOrdered_1)[which(names(keyvals) %in% c('Down-regulated','Up-regulated'))],
+                 colCustom = keyvals)
+
 
 ## Simple function for plotting a Volcano plot, returns a ggplot object
 deseq.volcano <- function(res, datasetName) {
-  return(EnhancedVolcano(res, x = 'log2FoldChange', y = 'padj',
+  return(EnhancedVolcano(res, x = 'log2FoldChange', y = 'pvalue',
                          #lab=rownames(res),
                          lab = NA,
                          #title = paste(datasetName, "Control vs EAB infested"),
@@ -203,34 +279,44 @@ deseq.volcano <- function(res, datasetName) {
                          subtitle = NULL,
                          #subtitle = bquote(italic('FDR <= 0.05 and absolute FC >= 2')),
                          # Change text and icon sizes
-                         labSize = 3, pointSize = 1.5, axisLabSize=10, titleLabSize=12,
+                         labSize = 3, pointSize = 1.5, axisLabSize=14, titleLabSize=12,
                          subtitleLabSize=8, captionLabSize=10,
                          # Disable legend
                          legendPosition = "none",
+                         border = "full",
+                         gridlines.minor = FALSE, gridlines.major = FALSE,
+                         selectLab = rownames(resOrdered_1)[which(names(keyvals) %in% c('Down-regulated','Up-regulated'))],
+                         colCustom = keyvals,
                          # Set cutoffs
                          pCutoff = 0.05, FCcutoff = 2))
 }
 
 ## Note: input data is the corrected DESeq2 output using the 'lfcShrink' function (see chapter 4)
-p1<-deseq.volcano(res = resLFC_1, datasetName = "B3")
+p1<-deseq.volcano(res = resOrdered_1, datasetName = "B3")
 
-control_up_b3 <- pvals[pvals$padj <= 0.05 & pvals$log2FoldChange < -2,]
-treatment_up_b3 <- pvals[pvals$padj <= 0.05 & pvals$log2FoldChange > 2,]
-head(control_up_b3)
+control_up_b3 <- pvals[pvals$padj <= 0.05 & pvals$log2FoldChange <= -2,]
+treatment_up_b3 <- pvals[pvals$padj <= 0.05 & pvals$log2FoldChange >= 2,]
+head(control_up_b3_no_na)
 control_up_b3_no_na<-na.omit(control_up_b3)
+#order(control_up_b3_no_na$log2FoldChange)
 treatment_up_b3_no_na<-na.omit(treatment_up_b3)
+total <- rbind(control_up_b3_no_na,treatment_up_b3_no_na)
+nrow(control_up_b3_no_na)
+nrow(total)
+write.csv(control_up_b3_no_na,"DEGs_B3_control_up.csv")
+write.csv(treatment_up_b3_no_na,"DEGs_B3_treatment_up.csv")
 
 ###########
 ## Tree B8
 deseqFile1 <- "b8_counts.csv"
-countData1 <- read.table(deseqFile1, header = T, sep = ";", row.names = 1)
+countData1 <- read.table(deseqFile1, header = T, sep = ",", row.names = 1)
 head(countData1)
 sampleNames1 <- colnames(countData1)
 sampleCondition1 <- c("Control","Control","Control","Treatment", "Treatment","Treatment")
 sampleCondition2 <- c("CH100","CH16","CH44","CH13", "CH41","CH97")
 
 
-colData1<- data.frame(condition = sampleCondition1, tree=sampleCondition2)
+colData1<- data.frame(condition = sampleCondition1)
 row.names(colData1) = sampleNames1
 treatments = c("Control","Treatment")
 all(rownames(colData1) == colnames(countData1))
@@ -261,10 +347,8 @@ resLFC_1$ID<-rownames(resLFC_1)
 head(dds1)
 
 sum(resLFC_1$padj < 0.1, na.rm=TRUE)
-sum(resLFC_1$padj <= 0.05 & resLFC_1$log2FoldChange <= -2, na.rm=TRUE)
-sum(resLFC_1$padj <= 0.05 & resLFC_1$log2FoldChange >= 2, na.rm=TRUE)
-
-vsd <- vst(dds1, blind=FALSE)
+sum(resOrdered_1$padj <= 0.05 & resOrdered_1$log2FoldChange <= -2, na.rm=TRUE)
+sum(resOrdered_1$padj <= 0.05 & resOrdered_1$log2FoldChange >= 2, na.rm=TRUE)
 
 resOrdered <- res1[order(res1$pvalue),]
 summary(res1)
@@ -275,6 +359,32 @@ summary(res05)
 sum(res05$padj < 0.05, na.rm=TRUE)
 pvals<-as.data.frame(resOrdered_1[order(resOrdered_1$padj),])
 
+# heatmap
+vsd <- vst(dds1, blind=FALSE)
+
+heat_colors <- brewer.pal(6, "YlOrRd")
+select <- order(rowMeans(counts(dds1,normalized=TRUE)),
+                decreasing=TRUE)[1:10]
+
+
+fontsize_row = 10 - nrow(assay(dds1)[select,]) / 15
+
+pheat1<-pheatmap(assay(dds1)[select,], cluster_rows=TRUE, clustering_distance_rows = "euclidean",color = heat_colors,
+                 show_rownames=TRUE, show_colnames = FALSE, 
+                 cluster_cols=FALSE, fontsize_row=fontsize_row, annotation_col=df, scale = "row", cutree_rows = 2, cutree_cols = 2)
+
+save_pheatmap_pdf(pheat1, "B8_pheatmap.pdf")
+
+B8_top50<-rownames(assay(dds1)[select,][pheat1$tree_row[["order"]],])
+write.csv(B8_top50, "B8_top50.csv")
+
+B8_hist<-ggplot(pvals) +
+  geom_histogram(aes(x = pvalue), breaks = seq(0, 1, 0.05),
+                 color = "black", fill = "grey") +
+  # Remove space between x-axis and min(y)
+  scale_y_continuous(expand = expansion(c(0, 0.05))) +
+  #facet_wrap(vars(contrast)) + # separate plots
+  theme_bw(base_size = 12)
 ###################
 
 ##
@@ -287,10 +397,10 @@ new_p <- pvals[pvals$padj <= 0.05 & pvals$log2FoldChange < -2 | pvals$log2FoldCh
 
 new_p2<-na.omit(new_p)
 
-pvals2<-new_p2[, c(2,8)]
+pvals2<-new_p2[, c(2,7)]
 pvals3<-na.omit(pvals2)
 
-write.csv(pvals3, "B8_with_gi.csv")
+#write.csv(pvals3, "B8_with_gi.csv")
 pvals4<-read.csv("B8_with_gi.csv", header = TRUE)
 
 str(pvals4)
@@ -315,7 +425,7 @@ keggres3<-transform(keggres2, KeggID = substr(names, 1,8), Annotations = substr(
 keggres4<-na.omit(keggres3)
 Kdf5<-subset(keggres4, greater.p.val < 0.5) 
 
-#write.csv(Kdf5, "Gene family enrichment B3 control v B3 ADB")
+#write.csv(Kdf5, "Gene family enrichment B3 control v B3")
 
 (q2 <- ggplot(Kdf5, aes(greater.stat.mean, Annotations))+
     geom_point(aes(colour=greater.q.val, size=greater.set.size)) +
@@ -344,22 +454,33 @@ dev.off()
 ##
 
 
-#write.csv(as.data.frame(resOrdered_1[order(resOrdered_1$padj),] ), file="condition_control_vs_treatmentB8.csv")
+write.csv(as.data.frame(resOrdered_1[order(resOrdered_1$padj),] ), file="condition_control_vs_treatmentB8.csv")
 plotMA(resLFC_1)
 PCA_2<-plotPCA(vsd, intgroup="condition")+labs(title="B8")
 
-p2<-deseq.volcano(res = resLFC_1, datasetName = "B8")
+keyvals <- ifelse(resOrdered_1$log2FoldChange <= -2 & resOrdered_1$padj <= 0.05, 'blue3',
+                  ifelse(resOrdered_1$log2FoldChange >= 2 & resOrdered_1$padj <= 0.05, 'red2',
+                         'grey50'))
+                         
+keyvals[is.na(keyvals)]<-'grey50'
+names(keyvals)[keyvals == 'blue3'] <- 'Down-regulated'
+names(keyvals)[keyvals == 'red2'] <- 'Up-regulated'
+names(keyvals)[keyvals == 'grey50'] <- 'Not significant'
+  
+p2<-deseq.volcano(res = resOrdered_1, datasetName = "B8")
 
 control_up_b8 <- pvals[pvals$padj <= 0.05 & pvals$log2FoldChange < -2,]
 treatment_up_b8 <- pvals[pvals$padj <= 0.05 & pvals$log2FoldChange > 2,]
 control_up_b8_no_na<-na.omit(control_up_b8)
 treatment_up_b8_no_na<-na.omit(treatment_up_b8)
+write.csv(control_up_b8_no_na,"DEGs_B8_control_up.csv")
+write.csv(treatment_up_b8_no_na,"DEGs_B8_treatment_up.csv")
 
 ###########
 ## Tree B9
 deseqFile1 <- "b9_counts.csv"
-countData1 <- read.table(deseqFile1, header = T, sep = ";", row.names = 1)
-str(countData1)
+countData1 <- read.table(deseqFile1, header = T, sep = ",", row.names = 1)
+head(countData1)
 sampleNames1 <- colnames(countData1)
 sampleCondition1 <- c("Control","Control","Control","Treatment", "Treatment","Treatment")
 sampleCondition2 <- c("CH4","CH32","CH88","CH1", "CH29","CH85")
@@ -396,8 +517,8 @@ head(dds1)
 
 sum(resLFC_1$padj < 0.1, na.rm=TRUE)
 sum(resLFC_1$padj < 0.05, na.rm=TRUE)
-sum(resLFC_1$padj < 0.05 & resLFC_1$log2FoldChange <= -2, na.rm=TRUE)
-sum(resLFC_1$padj < 0.05 & resLFC_1$log2FoldChange >= 2, na.rm=TRUE)
+sum(resOrdered_1$padj < 0.05 & resOrdered_1$log2FoldChange <= -2, na.rm=TRUE)
+sum(resOrdered_1$padj < 0.05 & resOrdered_1$log2FoldChange >= 2, na.rm=TRUE)
 
 vsd <- vst(dds1, blind=FALSE)
 
@@ -410,6 +531,32 @@ summary(res05)
 sum(res05$padj < 0.05, na.rm=TRUE)
 
 pvals<-as.data.frame(resOrdered_1[order(resOrdered_1$padj),])
+
+# heatmap
+
+vsd <- vst(dds1, blind=FALSE)
+select <- order(rowMeans(counts(dds1,normalized=TRUE)),
+                decreasing=TRUE)[1:50]
+
+
+fontsize_row = 10 - nrow(assay(dds1)[select,]) / 15
+
+pheat1<-pheatmap(assay(dds1)[select,], cluster_rows=TRUE, clustering_distance_rows = "euclidean",color = heat_colors,
+                 show_rownames=TRUE, show_colnames = FALSE, 
+                 cluster_cols=FALSE, fontsize_row=fontsize_row, annotation_col=df, scale = "row", cutree_rows = 2, cutree_cols = 2)
+
+save_pheatmap_pdf(pheat1, "B9_pheatmap.pdf")
+
+B9_top50<-rownames(assay(dds1)[select,][pheat1$tree_row[["order"]],])
+write.csv(B9_top50, "B9_top50.csv")
+
+B9_hist<-ggplot(pvals) +
+  geom_histogram(aes(x = pvalue), breaks = seq(0, 1, 0.05),
+                 color = "black", fill = "grey") +
+  # Remove space between x-axis and min(y)
+  scale_y_continuous(expand = expansion(c(0, 0.05))) +
+  #facet_wrap(vars(contrast)) + # separate plots
+  theme_bw(base_size = 12)
 
 ###################
 
@@ -482,7 +629,17 @@ dev.off()
 
 #write.csv(as.data.frame(resOrdered_1[order(resOrdered_1$padj),] ), file="condition_control_vs_treatmentB9.csv")
 plotMA(resLFC_1)
-p3<-deseq.volcano(res = resLFC_1, datasetName = "B9")
+
+keyvals <- ifelse(resOrdered_1$log2FoldChange <= -2 & resOrdered_1$padj <= 0.05, 'blue3',
+                  ifelse(resOrdered_1$log2FoldChange >= 2 & resOrdered_1$padj <= 0.05, 'red2',
+                         'grey50'))
+                         
+keyvals[is.na(keyvals)]<-'grey50'
+names(keyvals)[keyvals == 'blue3'] <- 'Down-regulated'
+names(keyvals)[keyvals == 'red2'] <- 'Up-regulated'
+names(keyvals)[keyvals == 'grey50'] <- 'Not significant'
+  
+p3<-deseq.volcano(res = resOrdered_1, datasetName = "B9")
 PCA_3<-plotPCA(vsd, intgroup="condition")+labs(title="B9")
 
 
@@ -490,6 +647,8 @@ control_up_b9 <- pvals[pvals$padj <= 0.05 & pvals$log2FoldChange < -2,]
 treatment_up_b9 <- pvals[pvals$padj <= 0.05 & pvals$log2FoldChange > 2,]
 control_up_b9_no_na<-na.omit(control_up_b9)
 treatment_up_b9_no_na<-na.omit(treatment_up_b9)
+write.csv(control_up_b9_no_na,"DEGs_B9_control_up.csv")
+write.csv(treatment_up_b9_no_na,"DEGs_B9_treatment_up.csv")
 
 
 ###########
@@ -498,7 +657,7 @@ deseqFile1 <- "b20_counts.csv"
 countData1 <- read.table(deseqFile1, header = T, sep = ",", row.names = 1)
 #countData1[is.na(countData1)] <- 0
 
-str(countData1)
+head(countData1)
 sampleNames1 <- colnames(countData1)
 sampleCondition1 <- c("Control","Control","Control","Treatment", "Treatment","Treatment")
 sampleCondition2 <- c("CH8","CH36","CH64","CH5", "CH33","CH125")
@@ -535,8 +694,8 @@ head(dds1)
 
 sum(resLFC_1$padj < 0.1, na.rm=TRUE)
 sum(resLFC_1$padj < 0.05, na.rm=TRUE)
-sum(resLFC_1$padj <= 0.05 & resLFC_1$log2FoldChange >= 2, na.rm=TRUE)
-sum(resLFC_1$padj <= 0.05 & resLFC_1$log2FoldChange <= -2, na.rm=TRUE)
+sum(resOrdered_1$padj <= 0.05 & resOrdered_1$log2FoldChange >= 2, na.rm=TRUE)
+sum(resOrdered_1$padj <= 0.05 & resOrdered_1$log2FoldChange <= -2, na.rm=TRUE)
 
 
 vsd <- vst(dds1, blind=FALSE)
@@ -549,6 +708,49 @@ res05 <- results(dds1, alpha=0.05)
 summary(res05)
 sum(res05$padj < 0.05, na.rm=TRUE)
 pvals<-as.data.frame(resOrdered_1[order(resOrdered_1$padj),])
+
+# heatmap
+top50_padj_b20<-head(resLFC_1[order(resLFC_1$padj),], 50)
+
+vsd <- vst(dds1, blind=FALSE)
+
+select <- order(rowMeans(counts(dds1,normalized=TRUE)),
+                decreasing=TRUE)[1:50]
+
+
+fontsize_row = 10 - nrow(assay(dds1)[select,]) / 15
+
+pheat1<-pheatmap(assay(dds1)[select,], cluster_rows=TRUE, clustering_distance_rows = "euclidean",color = heat_colors,
+                 show_rownames=TRUE, show_colnames = FALSE, 
+                 cluster_cols=FALSE, fontsize_row=fontsize_row, annotation_col=df, scale = "row", cutree_rows = 2, cutree_cols = 2)
+
+save_pheatmap_pdf(pheat1, "B20_pheatmap.pdf")
+
+B20_top50<-rownames(assay(dds1)[select,][pheat1$tree_row[["order"]],])
+write.csv(B20_top50, "B20_top50.csv")
+
+B20top20_dots<-ggplot(top_20) +
+  geom_point(aes(x = ID, y = normalized_counts, color=condition)) +
+  scale_y_log10() +
+  xlab("Genes") +
+  ylab("Normalized Counts") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  theme(plot.title = element_text(hjust = 0.5))
+
+svg("B20_points.svg")
+plot (B20top20_dots)# Make plot
+dev.off() 
+
+write.table(top_20$ID, "B20_top20.txt")
+
+B20_hist<-ggplot(pvals) +
+  geom_histogram(aes(x = pvalue), breaks = seq(0, 1, 0.05),
+                 color = "black", fill = "grey") +
+  # Remove space between x-axis and min(y)
+  scale_y_continuous(expand = expansion(c(0, 0.05))) +
+  #facet_wrap(vars(contrast)) + # separate plots
+  theme_bw(base_size = 12)
 
 ##
 # Functional enrichment
@@ -563,7 +765,7 @@ new_p2<-na.omit(new_p)
 pvals2<-new_p2[, c(2,7)]
 pvals3<-na.omit(pvals2)
 
-write.csv(pvals3, "B20_with_gi.csv")
+#write.csv(pvals3, "B20_with_gi.csv")
 pvals4<-read.csv("B20_with_gi.csv", header = TRUE)
 
 str(pvals4)
@@ -611,14 +813,25 @@ Kdf5<-subset(keggres4, greater.p.val < 0.5)
 
 
 pdf("Enrichment_genes_in_B20.pdf",width = 5, height = 4)
-plot (q3)# Make plot
+plot (q4)# Make plot
 dev.off() 
 
 ##
 
 #write.csv(as.data.frame(resOrdered_1[order(resOrdered_1$padj),] ), file="condition_control_vs_treatmentB20.csv")
 plotMA(resLFC_1)
-p4<-deseq.volcano(res = resLFC_1, datasetName = "B20")
+
+keyvals <- ifelse(resOrdered_1$log2FoldChange <= -2 & resOrdered_1$padj <= 0.05, 'blue3',
+                  ifelse(resOrdered_1$log2FoldChange >= 2 & resOrdered_1$padj <= 0.05, 'red2',
+                         'grey50'))
+                         
+keyvals[is.na(keyvals)]<-'grey50'
+names(keyvals)[keyvals == 'blue3'] <- 'Down-regulated'
+names(keyvals)[keyvals == 'red2'] <- 'Up-regulated'
+names(keyvals)[keyvals == 'grey50'] <- 'Not significant'
+  
+
+p4<-deseq.volcano(res = resOrdered_1, datasetName = "B20")
 p4 +
   ggplot2::coord_cartesian(xlim=c(-10, 20), ylim=c(0, 60))
 
@@ -626,6 +839,8 @@ control_up_b20 <- pvals[pvals$padj <= 0.05 & pvals$log2FoldChange < -2,]
 treatment_up_b20 <- pvals[pvals$padj <= 0.05 & pvals$log2FoldChange > 2,]
 control_up_b20_no_na<-na.omit(control_up_b20)
 treatment_up_b20_no_na<-na.omit(treatment_up_b20)
+write.csv(control_up_b20_no_na,"DEGs_B20_control_up.csv")
+write.csv(treatment_up_b20_no_na,"DEGs_B20_treatment_up.csv")
 
 
 PCA_4<-plotPCA(vsd, intgroup="condition", returnData = FALSE)+labs(title="B20")
@@ -646,6 +861,10 @@ dev.off()
 svg("Volcano_EAB.svg", width = 7, height = 6)
 plot (p5)# Make plot
 dev.off() 
+
+pdf("Volcano_EAB.pdf", width = 7, height = 6)
+plot (p5)# Make plot
+dev.off() 
 ####################
 # combined pca
 grid.newpage()
@@ -664,15 +883,15 @@ dev.off()
 # move to new plotting page
 grid.newpage()
 
-control_up_b3_genes <- row.names(control_up_b3)
-control_up_b8_genes <- row.names(control_up_b8)
-control_up_b9_genes <- row.names(control_up_b9)
-control_up_b20_genes <- row.names(control_up_b20)
+control_up_b3_genes <- row.names(control_up_b3_no_na)
+control_up_b8_genes <- row.names(control_up_b8_no_na)
+control_up_b9_genes <- row.names(control_up_b9_no_na)
+control_up_b20_genes <- row.names(control_up_b20_no_na)
 head(control_up_b3_genes)
-treatment_up_b3_genes <- row.names(treatment_up_b3)
-treatment_up_b8_genes <- row.names(treatment_up_b8)
-treatment_up_b9_genes <- row.names(treatment_up_b9)
-treatment_up_b20_genes <- row.names(treatment_up_b20)
+treatment_up_b3_genes <- row.names(treatment_up_b3_no_na)
+treatment_up_b8_genes <- row.names(treatment_up_b8_no_na)
+treatment_up_b9_genes <- row.names(treatment_up_b9_no_na)
+treatment_up_b20_genes <- row.names(treatment_up_b20_no_na)
 
 library(gplots)
 
@@ -692,7 +911,7 @@ my_list3 <- list(
   B20 = treatment_up_b20_genes
 )
 # save object from venn
-my_venn <- venn(my_list2, show.plot = FALSE)
+my_venn <- venn(my_list3, show.plot = FALSE)
 class(my_venn)
 
 library(ggvenn)
@@ -722,4 +941,17 @@ svg("EAB_treatment_venn_heat.svg", width = 7, height = 6)
 plot (q4)# Make plot
 dev.off() 
 
+
+###################
+# Histograms
+####################
+
+Ball_hist<-grid.arrange(B3_hist,B8_hist,B9_hist,B20_hist,
+                        ncol=2,
+                        nrow=2)
+svg("P_dist.svg", width = 7, height = 6)
+plot (Ball_hist)# Make plot
+dev.off() 
+
+###############################
 sessionInfo()
